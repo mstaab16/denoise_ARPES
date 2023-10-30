@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
+from scipy.signal import sawtooth, convolve2d
 from skimage.transform import resize
 import time
 
@@ -20,7 +21,7 @@ def xyz_to_sph(xyz_coords):
         # print(x,y,z)
         # print(np.arccos(x/np.sqrt(x**2 + y**2 + 1e-6)))
         return (
-                    np.arccos(z + 1e-10),
+                    np.arccos(np.clip(z, -1, 1)),
                     np.sign(y + 1.12941e-10)*np.arccos(x/np.sqrt(x**2 + y**2 + 1e-10))
                 )
     return np.array(list(map(lambda x: single_coord(x), xyz_coords)))
@@ -87,24 +88,26 @@ def detector_grid(shape):
     xx, yy = np.meshgrid(x,y)
     # zz = np.sin(15*(np.sin(np.degrees(45))*xx + np.sin(np.degrees(45))*yy))
     # zz += np.sin(15*(np.sin(np.degrees(45))*xx + np.cos(np.degrees(45))*yy))
-    freq = 30
-    cutoff = 0.7
+    freq = 20
+    cutoff = 0.5
     zz1 = np.sin((xx + yy)*freq)
     zz2 = np.sin((xx - yy)*freq)
-    zz1 = np.where(zz1 > cutoff, 1,0)
-    zz2 = np.where(zz2 > cutoff, 1,0)
-    zz = np.where(zz1 + zz2 > .5, 1,0)
+    zz1 = np.where(zz1 > cutoff, 1, .7)
+    zz2 = np.where(zz2 > cutoff, 1, .7)
+    # zz = np.where(zz1 + zz2 > cutoff, 1,0)
     # zz = np.where(zz1 > 0.5 or zz2 > 0.5, 1,0)
+    zz = zz1 + zz2
+    zz = convolve2d(zz, np.ones((3,3)), mode='same', boundary='symm')
     return zz
 
 def lorentzian(x, x0, gamma):
     return (1/np.pi)*(gamma/((x - x0)**2 + (gamma/2)**2))
 
 
-def tight_binding(kx, ky, energies, intrinsic_broadening=0.005, num_bands=None, realistic_cuprate=False):
+def tight_binding(kx, ky, kz, energies, intrinsic_broadening=0.005, num_bands=None, realistic_cuprate=False):
     if num_bands is None:
-        num_bands = np.random.randint(1,10)
-    t0 = np.random.uniform(0.001, 0.5, num_bands)
+        num_bands = np.random.randint(6,10)
+    t0 = np.random.uniform(-0.5, 0.5, num_bands)
     t1 = np.random.uniform(-0.9, -0.5, num_bands)
     t2 = np.random.uniform(0.01, 0.2, num_bands)
     t3 = np.random.uniform(-0.4, -0.1, num_bands)
@@ -114,7 +117,7 @@ def tight_binding(kx, ky, energies, intrinsic_broadening=0.005, num_bands=None, 
 
     if realistic_cuprate:
         t0 = [0.090555]
-        t1 = [-0.724474]
+        t1 = [-0.724474 * (1+0.6*np.cos(kz))]# * (np.sin(1*kz))*0.5]
         t2 = [0.0627473]
         t3 = [-0.165944]
         t4 = [-0.0150311]
@@ -137,7 +140,7 @@ def tight_binding(kx, ky, energies, intrinsic_broadening=0.005, num_bands=None, 
     # print(intensity.shape)
     return intensity.T / intensity.max()
 
-def pure_spectral_weight(kx, ky, temperature = 30,
+def pure_spectral_weight(kx, ky, kz, temperature = 30.0,
                          k_resolution = 0.011, e_resolution = 0.025,
                          energy_range = (-0.7, 0.1), num_energies = 200,
                          noise_level=0.3, lorentzian_width=0.005, random_bands=False):
@@ -148,7 +151,10 @@ def pure_spectral_weight(kx, ky, temperature = 30,
     The size of the gaussian convolution is determined by the e and k resolutions.
     The k and e units are in inverse Angstroms and eV respectively.
     """
-    
+    if noise_level > 1 or noise_level < 0:
+        raise ValueError(f"Noise level {noise_level} must be in the range [0,1]")
+
+    noise_level = noise_level**2
 
     low_energy = energy_range[0] - 25*(energy_range[1] - energy_range[0])/num_energies
     high_energy = energy_range[1] + 25*(energy_range[1] - energy_range[0])/num_energies
@@ -156,7 +162,7 @@ def pure_spectral_weight(kx, ky, temperature = 30,
     # spectral_weight = np.abs(np.random.normal(0,0.005, size=(len(kx), len(energies))).astype(np.float32))
     spectral_weight = np.zeros((len(kx), len(energies)), dtype=np.float32)
 
-    energy_bands = tight_binding(kx, ky, energies, intrinsic_broadening=lorentzian_width, realistic_cuprate=not random_bands)
+    energy_bands = tight_binding(kx, ky, kz, energies, intrinsic_broadening=lorentzian_width, realistic_cuprate=not random_bands)
 
     # Set spectral weight to 1 where the energy is for a given kx, ky
     # for energy in energy_bands:
@@ -178,6 +184,7 @@ def pure_spectral_weight(kx, ky, temperature = 30,
     spectral_weight = spectral_weight
     
     raw_spectrum = spectral_weight.copy()
+    spectral_weight *= fermi
     #spectral_weight *= fermi_function(energies[j])
 
     # if K_RES and E_RES are not 0, use scipy gaussian_filter to apply resolution blur
@@ -185,16 +192,15 @@ def pure_spectral_weight(kx, ky, temperature = 30,
     k_resolution_for_scipy = (k_resolution/(k_width))*len(kx)/10
     e_resolution_for_scipy = (e_resolution/(np.max(energy_range) - np.min(energy_range)))*num_energies
     if k_resolution != 0 or e_resolution != 0:
-        arpes_sim = gaussian_filter(spectral_weight, sigma = (k_resolution_for_scipy, e_resolution_for_scipy)) 
-        high_stats_spectrum = arpes_sim.copy() * fermi
-        fermi_noise = fermi * np.random.normal(1, 0.1, size=arpes_sim.shape) * arpes_sim.max()
+        arpes_sim = gaussian_filter(spectral_weight, sigma = (k_resolution_for_scipy, e_resolution_for_scipy))
+        high_stats_spectrum = arpes_sim.copy()# * fermi
+        fermi_noise = np.random.normal(1, 0.1, size=arpes_sim.shape) * arpes_sim.max()
         scattered_signal = gaussian_filter(raw_spectrum, sigma = (100*k_resolution_for_scipy, 10*e_resolution_for_scipy))
         scattered_signal = (scattered_signal * fermi_noise)
         scattered_signal -= scattered_signal.min()
         scattered_signal /= scattered_signal.max()
-        scattered_signal *= noise_level + .1
+        scattered_signal *= noise_level
         arpes_sim *= np.random.uniform(1-noise_level, 1, size=arpes_sim.shape)
-        
 
 
     # arpes_sim -= arpes_sim.min()
@@ -202,12 +208,10 @@ def pure_spectral_weight(kx, ky, temperature = 30,
     if k_resolution != 0 or e_resolution != 0:
         arpes_sim += scattered_signal
 
-    
-    arpes_sim += scattered_signal * detector_grid(arpes_sim.shape) * noise_level
+    arpes_sim += scattered_signal * detector_grid(arpes_sim.shape) * np.sqrt(noise_level)
     arpes_sim *= fermi
     arpes_sim += np.random.exponential(noise_level/10, size=arpes_sim.shape)
 
-    
     # high_stats_spectrum *= fermi
     raw_spectrum *= fermi
 
@@ -223,28 +227,53 @@ def simulate_ARPES_measurement(polar=0.0, tilt=0.0, azimuthal=0.0,
     This function simulates an ARPES measurement for a given set of parameters.
     Returns the simulated ARPES spectrum.
     """
+    inner_potential = 14
+    # fig = plt.figure()
+    # ax = fig.add_subplot(projection='3d')
+    # for polar in np.linspace(-10,10,25):
     inverse_hbar_times_sqrt_2me = 0.512316722 #eV^-1/2 Angstrom^-1
-    r = inverse_hbar_times_sqrt_2me*np.sqrt(photon_energy) #(1/hbar) * sqrt(2 m_e KE)
     kx, ky, kz = get_normed_xyz_coords_from_orientation(acceptance_angle, num_angles+50, polar, azimuthal, tilt)
+    r = inverse_hbar_times_sqrt_2me*np.sqrt((photon_energy-4.3)+inner_potential) #(1/hbar) * sqrt(2 m_e KE)
     kx *= r
     ky *= r
     kz *= r
-    arpes, high_stats, raw_spectrum = pure_spectral_weight(kx, ky, temperature=temperature, k_resolution=k_resolution, e_resolution=e_resolution, energy_range=energy_range, num_energies=num_energies, noise_level=noise_level, random_bands=random_bands)
-    return arpes[25:-25,25:-25], high_stats[25:-25,25:-25],raw_spectrum[25:-25,25:-25]
+    # a = b = c = 3.7
+    a = b = c = 4.258
+    c = 17.46
+    a_star = 2*np.pi/a
+    b_star = 2*np.pi/b
+    c_star = 2*np.pi/c
+    kx_in_bz = sawtooth(2*np.pi*(kx/a_star-0.5))*a_star/2
+    ky_in_bz = sawtooth(2*np.pi*(ky/b_star-0.5))*b_star/2
+    kz_in_bz = sawtooth(2*np.pi*(kz/c_star-0.5))*c_star/2
+        # ax.scatter(kx_in_bz, ky_in_bz, kz_in_bz, cmap='Spectral_r', c=np.arange(kx_in_bz.shape[0]))
 
+    # ax.set_xlim(-a_star/2, a_star/2)
+    # ax.set_ylim(-b_star/2, b_star/2)
+    # ax.set_zlim(-c_star/2, c_star/2)
+    # ax.set_xlabel('kx')
+    # ax.set_ylabel('ky')
+    # ax.set_zlabel('kz')
+    # plt.show()
+    arpes, high_stats, raw_spectrum = pure_spectral_weight(
+            kx_in_bz*a, ky_in_bz*b, kz_in_bz*c,
+            temperature=temperature, k_resolution=k_resolution,
+            e_resolution=e_resolution, energy_range=energy_range,
+            num_energies=num_energies, noise_level=noise_level,
+            random_bands=random_bands)
+    return arpes[25:-25,25:-25], high_stats[25:-25,25:-25],raw_spectrum[25:-25,25:-25], kx_in_bz[25:-25], ky_in_bz[25:-25], kz_in_bz[25:-25]
 
 def generate_batch(n, noise=None, k_resolution=None, e_resolution=None, num_angles=256, num_energies=256):
     print("Generating data...")
     X = np.zeros((n, num_angles, num_energies), dtype=np.float32)
     Y = np.zeros((n, num_angles, num_energies), dtype=np.float32)
-    
-    polar = np.random.uniform(-15,15, n)
-    tilt = np.random.uniform(-15,15, n)
-    azimuthal = np.random.uniform(0, 360, n)
+    polar = np.random.uniform(-5,5, n)
+    tilt = np.random.uniform(-5,5, n)
+    azimuthal = np.random.uniform(30, 60, n)
     photon_energy = np.random.normal(100, 10, n)
 
     if noise is None:
-        noise_level = np.abs(np.random.normal(0.3, 0.1, n))
+        noise_level = np.abs(np.random.normal(0.3, 0.01, n))
     else:
         noise_level = np.abs(np.random.normal(noise, noise*0.1, n))
     if k_resolution is None:
@@ -256,69 +285,163 @@ def generate_batch(n, noise=None, k_resolution=None, e_resolution=None, num_angl
     else:
         e_resolution = np.random.normal(e_resolution, e_resolution*0.1, n)
 
+    min_ene = np.random.uniform(-0.75, -0.55, n)
 
     for i in range(n):
         print(f"Generating spectrum {i+1}/{n}", end='\r')
-        X_, Y_, _ = simulate_ARPES_measurement(
+        X_, _, Y_, _ ,_ ,_ = simulate_ARPES_measurement(
                                         polar=polar[i], azimuthal=azimuthal[i], tilt=tilt[i],
                                         k_resolution=k_resolution[i], e_resolution=e_resolution[i],
                                         noise_level=noise_level[i], photon_energy=photon_energy[i],
-                                        num_angles=256, num_energies=256,
-                                        random_bands=True
+                                        num_angles=num_angles, num_energies=num_energies,
+                                        energy_range=(min_ene[i], min_ene[i]+0.8),
+                                        random_bands=True,
                                         )
         # X[i] = resize(X_, (64,64))
         # Y[i] = resize(Y_, (64,64))
         X[i] = X_
         Y[i] = Y_
-    print(" "*100)
-    return X, Y
+        yield X_, Y_
+    # print(" "*100)
+    # return X, Y
 
 
 if __name__ == "__main__":
-    # sender = imagezmq.ImageSender(connect_to='tcp://localhost:5432')
-    # while True:
-    #     azimuth = np.random.uniform(0, 360)
-    #     spectrum = simulate_ARPES_measurement(polar=np.random.uniform(-15,15), tilt=np.random.uniform(-15,15), azimuthal=azimuth)
-    #     sender.send_image(f"{azimuth:.2f}", spectrum)
-    #     time.sleep(0.01)
+    polar = 4
+    tilt = 3
+    azimuthal = 16
+    energy_min = -0.7
+    energy_max = 0.1
+    k_resolution = 0.015
+    e_resolution = 0.020
+    noise_level = .5
+    photon_energy = 110
+    temperature = 100.0
+    acceptance_angle=30.0
+    num_angles = 512
+    num_energies = 512
 
-    # from time import perf_counter_ns
-    # test_num = 1
-    # start = perf_counter_ns()
-    # for _ in range(test_num):
-    #     polar = np.random.uniform(-15,15)
-    #     tilt = np.random.uniform(-15,15)
-    #     azimuthal = np.random.uniform(0, 360)
-    #     # k_resolution = np.random.uniform(0.001, 0.02)
-    #     # e_resolution = np.random.uniform(0.001, 0.03)
-    #     # noise_level = np.random.uniform(0,1)
-    #     # photon_energy = np.random.uniform(6, 100)
-    #     k_resolution = np.random.normal(0.0011, 0.003)
-    #     e_resolution = np.random.normal(0.015, 0.003)
-    #     noise_level = np.abs(np.random.normal(0.3, 0.1))
-    #     photon_energy = np.random.normal(100, 10)
-    #     measured_spectrum, high_stats_spectrum, raw_spectrum = simulate_ARPES_measurement(
-    #                                                 polar=polar, azimuthal=azimuthal, tilt=tilt, 
-    #                                                 k_resolution=k_resolution, e_resolution=e_resolution,
-    #                                                 noise_level=noise_level, photon_energy=photon_energy,
-    #                                                 num_angles=256, num_energies=256,
-    #                                                 random_bands=True)
-    # print(f"Time per spectrum: {(perf_counter_ns() - start)/test_num * 1e-6 :.2f} ms")
-    # fig, (ax1, ax2, ax3) = plt.subplots(1,3, figsize=(15,5))
-    # from skimage.transform import resize
-    # measured_spectrum = resize(measured_spectrum, (64,64))
-    # high_stats_spectrum = resize(high_stats_spectrum, (64,64))
-    # raw_spectrum = resize(raw_spectrum, (64,64))
+    inner_potential = 14
+    inverse_hbar_times_sqrt_2me = 0.512316722 #eV^-1/2 Angstrom^-1
+    # a = b = c = 3.7
+    a = b = c = 4.258
+    c = 17.46
+    a_star = 2*np.pi/a
+    b_star = 2*np.pi/b
+    c_star = 2*np.pi/c
 
-    # ax1.imshow(measured_spectrum, cmap='Greys', aspect='auto', origin='lower')
-    # ax2.imshow(high_stats_spectrum, cmap='Greys', aspect='auto', origin='lower')
-    # ax3.imshow(raw_spectrum, cmap='Greys', aspect='auto', origin='lower')
+
+    # X,Y = generate_batch(10, num_angles=1024, num_energies=1024)
+    for i, (x, y) in enumerate(generate_batch(1000, num_angles=1024, num_energies=1024)):
+        np.save(f'data/x_{i:04d}.npy', x)
+        np.save(f'data/y_{i:04d}.npy', y)
+    
+    # fig, axes = plt.subplots(2, 10, figsize=(20, 4))
+
+
+    # for i, (ax1, ax2, x, y) in enumerate(zip(axes[0], axes[1], X, Y)):
+    #     xinit = np.random.randint(0,511-256)
+    #     yinit = np.random.randint(0,511-256)
+    #     cropped_x = x[xinit:xinit+256, yinit:yinit+256]
+    #     cropped_y = y[xinit:xinit+256, yinit:yinit+256]
+    #     ax1.imshow(cropped_y, origin='lower', cmap='gray_r')
+    #     ax2.imshow(cropped_x, origin='lower', cmap='gray_r')
+    #     ax1.set_yticklabels([])
+    #     ax1.set_xticklabels([])
+    #     ax2.set_yticklabels([])
+    #     ax2.set_xticklabels([])
+    #     np.savetxt(f'/Users/matthewstaab/Desktop/SimARPESForPeter/data_X/x_{i:02d}', cropped_x)
+    #     np.savetxt(f'/Users/matthewstaab/Desktop/SimARPESForPeter/target_Y/y_{i:02d}', cropped_y)
+    # fig.tight_layout()
     # plt.show()
 
-    X, Y = generate_batch(1)
-    fig, (ax1, ax2) = plt.subplots(1,2, figsize=(10,5))
-    ax1.imshow(X[0], cmap='Greys', aspect='auto', origin='lower')
-    ax2.imshow(Y[0], cmap='Greys', aspect='auto', origin='lower')
-    plt.show()
 
-    # make_training_data()
+    
+
+
+#     cmap='terrain'
+#     fig, axes = plt.subplots(2, 5, figsize=(10,4))
+#     for i, noise_level in enumerate(np.linspace(0.001,.9999,10)):
+#         k_res = k_resolution*(1+5*noise_level)
+#         e_res = e_resolution*(1+5*noise_level)
+#         measured, high_stats, raw, kx_, ky_, kz_ = simulate_ARPES_measurement(
+#                                                     polar=polar, azimuthal=azimuthal, tilt=tilt,
+#                                                     k_resolution=k_res, e_resolution=e_res,
+#                                                     noise_level=noise_level, photon_energy=photon_energy,
+#                                                     num_angles=num_angles, num_energies=num_energies,
+#                                                     energy_range=(energy_min, energy_max),
+#                                                     random_bands=False, temperature=temperature,
+#                                                     )
+#         print(i)
+#         noise_image = np.random.poisson(high_stats*1/(noise_level**3+0.00001), size=high_stats.shape).astype(np.float32)
+#         noise_image /= noise_image.max()
+#         detector_grid_noise = np.random.poisson(detector_grid(noise_image.shape), size=high_stats.shape).astype(np.float32)
+#         detector_grid_noise /= detector_grid_noise.max()
+#         fermi_image = fermi_function(temperature, np.linspace(energy_min, energy_max, num_energies))
+#         fermi_image = np.tile(fermi_image, (num_energies,1)).T
+#         scatter_noise = gaussian_filter(high_stats, np.array(high_stats.shape)/10.0)
+#         scatter_noise *= fermi_image
+#         scatter_noise /= scatter_noise.max()
+#         background = np.tile(np.linspace(1,0,num_energies), (num_energies,1)).T
+#         random_noise = np.random.poisson(fermi_image, size=noise_image.shape).astype(np.float32)
+#         random_noise /= random_noise.max()
+#         final = (noise_image*3 + (random_noise*2 + scatter_noise*5 + background*5) * noise_level * 2) * detector_grid_noise
+#         final /= final.max()
+#         axes.flatten()[i].imshow(final, cmap=cmap, origin='lower', extent=[-acceptance_angle/2, acceptance_angle/2, energy_min, energy_max])
+#         axes.flatten()[i].set_title(f"noise level: {noise_level:.2f}")
+#         axes.flatten()[i].axhline(0, color='k', linestyle='--')
+#         # Hide X and Y axes label marks
+#         axes.flatten()[i].xaxis.set_tick_params(labelbottom=False)
+#         axes.flatten()[i].yaxis.set_tick_params(labelleft=False)
+# 
+#         # Hide X and Y axes tick marks
+#         axes.flatten()[i].set_xticks([])
+#         axes.flatten()[i].set_yticks([])
+#         axes.flatten()[i].set_box_aspect(1)
+#         axes.flatten()[i].set_aspect(acceptance_angle/(energy_max-energy_min))
+#     fig.tight_layout()
+#     plt.show()
+
+
+    # for inner_potential in np.arange(30):
+    #     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7,3))
+    #     for i, photon_energy in enumerate(np.linspace(110,144,34)):
+    #         print(i,end='\r')
+    #         measured, high_stats, raw, kx_, ky_, kz_ = simulate_ARPES_measurement(
+    #                                             polar=polar, azimuthal=azimuthal, tilt=tilt,
+    #                                             k_resolution=k_resolution, e_resolution=e_resolution,
+    #                                             noise_level=noise_level, photon_energy=photon_energy,
+    #                                             num_angles=num_angles, num_energies=num_energies,
+    #                                             random_bands=False, temperature=temperature,
+    #                                             )
+    #         kx, ky, kz = get_normed_xyz_coords_from_orientation(acceptance_angle, num_angles+50, polar, azimuthal, tilt)
+    #         r = inverse_hbar_times_sqrt_2me*np.sqrt((photon_energy-4.3)+inner_potential) #(1/hbar) * sqrt(2 m_e KE)
+    #         kx *= r
+    #         ky *= r
+    #         kz *= r
+    #         kx_in_bz = sawtooth(2*np.pi*(kx/a_star-0.5))*a_star/2
+    #         ky_in_bz = sawtooth(2*np.pi*(ky/b_star-0.5))*b_star/2
+    #         kz_in_bz = sawtooth(2*np.pi*(kz/c_star-0.5))*c_star/2
+    #         kx_in_bz = kx_in_bz[25:-25]
+    #         ky_in_bz = ky_in_bz[25:-25]
+    #         kz_in_bz = kz_in_bz[25:-25]
+    #         ax1.scatter(kx_in_bz, kz_in_bz, c=measured[160:170,:].mean(axis=0), cmap='Greys',s=1, alpha=1)
+    #         ax2.scatter(kx_, kz_, c=measured[160:170,:].mean(axis=0), cmap='Greys',s=1, alpha=1)
+    #         #plt.scatter(kx, kz, c=measured[45:50,:].mean(axis=0), cmap='Greys',s=1)
+
+
+    #     #plt.imshow(im, cmap='terrain', origin='lower')
+    #     ax1.set_title(f"Inner Potential: {inner_potential:.2f} eV")
+    #     ax2.set_title(f"Inner Potential: 14.00eV")
+    #     ax1.set_aspect('equal')
+    #     ax2.set_aspect('equal')
+    #     ax1.set_xlim(-a_star/2,a_star/2)
+    #     ax1.set_ylim(-c_star/2,c_star/2)
+    #     ax2.set_xlim(-a_star/2,a_star/2)
+    #     ax2.set_ylim(-c_star/2,c_star/2)
+    #     fig.tight_layout()
+    #     plt.savefig(f"{inner_potential:04}.png")
+    #     plt.close()
+
+    
+

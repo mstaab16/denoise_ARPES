@@ -27,11 +27,8 @@ class NpyDataset(Dataset):
     def __init__(self, start_idx, end_idx, Y=1024, X=1024, window=(256,256), step=(128,128), border=None, border_weight=0):
         self.qlty_obj = qlty2D.NCYXQuilt(Y=Y, X=X, window=window, step=step, border=border, border_weight=border_weight)
         self.num_indices_per_file = int((X/step[0])*(Y/step[1]))
-
         self.x_files = [f'data\\x_{i:04d}.npy' for i in range(start_idx, end_idx)]
         self.y_files = [f'data\\y_{i:04d}.npy' for i in range(start_idx, end_idx)]
-
-
         self.most_recent_filenum = None
     
     def __getitem__(self, index):

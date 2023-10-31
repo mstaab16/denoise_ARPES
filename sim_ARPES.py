@@ -88,8 +88,8 @@ def detector_grid(shape):
     xx, yy = np.meshgrid(x,y)
     # zz = np.sin(15*(np.sin(np.degrees(45))*xx + np.sin(np.degrees(45))*yy))
     # zz += np.sin(15*(np.sin(np.degrees(45))*xx + np.cos(np.degrees(45))*yy))
-    freq = 20
-    cutoff = 0.5
+    freq = np.random.normal(25,3)
+    cutoff = np.random.normal(0.5, 0.05)
     zz1 = np.sin((xx + yy)*freq)
     zz2 = np.sin((xx - yy)*freq)
     zz1 = np.where(zz1 > cutoff, 1, .7)
@@ -331,29 +331,23 @@ if __name__ == "__main__":
     c_star = 2*np.pi/c
 
 
-    # X,Y = generate_batch(10, num_angles=1024, num_energies=1024)
-    for i, (x, y) in enumerate(generate_batch(1000, num_angles=1024, num_energies=1024)):
-        np.save(f'data/x_{i:04d}.npy', x)
-        np.save(f'data/y_{i:04d}.npy', y)
+    # for i, (x, y) in enumerate(generate_batch(1000, num_angles=1024, num_energies=1024)):
+    #    np.save(f'data/x_{i:04d}.npy', x)
+    #    np.save(f'data/y_{i:04d}.npy', y)
     
-    # fig, axes = plt.subplots(2, 10, figsize=(20, 4))
-
-
-    # for i, (ax1, ax2, x, y) in enumerate(zip(axes[0], axes[1], X, Y)):
-    #     xinit = np.random.randint(0,511-256)
-    #     yinit = np.random.randint(0,511-256)
-    #     cropped_x = x[xinit:xinit+256, yinit:yinit+256]
-    #     cropped_y = y[xinit:xinit+256, yinit:yinit+256]
-    #     ax1.imshow(cropped_y, origin='lower', cmap='gray_r')
-    #     ax2.imshow(cropped_x, origin='lower', cmap='gray_r')
-    #     ax1.set_yticklabels([])
-    #     ax1.set_xticklabels([])
-    #     ax2.set_yticklabels([])
-    #     ax2.set_xticklabels([])
-    #     np.savetxt(f'/Users/matthewstaab/Desktop/SimARPESForPeter/data_X/x_{i:02d}', cropped_x)
-    #     np.savetxt(f'/Users/matthewstaab/Desktop/SimARPESForPeter/target_Y/y_{i:02d}', cropped_y)
-    # fig.tight_layout()
-    # plt.show()
+    batch = generate_batch(10, num_angles=1024, num_energies=1024)
+    fig, axes = plt.subplots(2, 10, figsize=(20, 4))
+    for i, (ax1, ax2, (x, y)) in enumerate(zip(axes[0], axes[1], batch)):
+        ax1.imshow(y, origin='lower', cmap='gray_r')
+        ax2.imshow(x, origin='lower', cmap='gray_r')
+        ax1.set_yticklabels([])
+        ax1.set_xticklabels([])
+        ax2.set_yticklabels([])
+        ax2.set_xticklabels([])
+        # np.savetxt(f'/Users/matthewstaab/Desktop/SimARPESForPeter/data_X/x_{i:02d}', cropped_x)
+        # np.savetxt(f'/Users/matthewstaab/Desktop/SimARPESForPeter/target_Y/y_{i:02d}', cropped_y)
+    fig.tight_layout()
+    plt.show()
 
 
     
